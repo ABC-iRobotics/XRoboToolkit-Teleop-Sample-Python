@@ -61,6 +61,7 @@ class BaseTeleopController(abc.ABC):
         self.effector_control_mode = {}  # Store control mode for each end effector
         self.active = {}
         self.gripper_pos_target = {}
+        self.wrist_regularization_task: Dict[str, Any] = {}  # Per-arm soft joint tasks keeping wrists near 0°
 
         # Motion tracker support
         self.motion_tracker_task = {}
@@ -79,7 +80,7 @@ class BaseTeleopController(abc.ABC):
         self._robot_setup()
         self._placo_setup()
 
-    def _process_xr_pose(self, xr_pose, src_name):
+    def _calc_delta_xr_pose(self, xr_pose, src_name):
         """Process the current XR controller pose."""
         # Get position and orientation
         controller_xyz = np.array([xr_pose[0], xr_pose[1], xr_pose[2]])
@@ -115,9 +116,9 @@ class BaseTeleopController(abc.ABC):
     def _placo_setup(self):
         """Set up the placo inverse kinematics solver."""
         self.placo_robot = placo.RobotWrapper(self.robot_urdf_path)
-        print("Joint names in the Placo model:")
-        for joint_name in self.placo_robot.model.names:
-            print(f"  {joint_name}")
+        #print("Joint names in the Placo model:")
+        #for joint_name in self.placo_robot.model.names:
+        #    print(f"  {joint_name}")
 
         self.solver = placo.KinematicsSolver(self.placo_robot)
         self.solver.dt = self.dt
@@ -148,17 +149,39 @@ class BaseTeleopController(abc.ABC):
             if control_mode == "position":
                 # Position-only control
                 self.effector_task[name] = self.solver.add_position_task(config["link_name"], ee_xyz)
-                print(f"Created position task for {name} -> {config['link_name']}")
+                #print(f"Created position task for {name} -> {config['link_name']}")
             else:
                 # Full pose control (default)
                 ee_target = tf.quaternion_matrix(ee_quat)
                 ee_target[:3, 3] = ee_xyz
                 self.effector_task[name] = self.solver.add_frame_task(config["link_name"], ee_target)
-                print(f"Created pose task for {name} -> {config['link_name']}")
+                #print(f"Created pose task for {name} -> {config['link_name']}")
             
             self.effector_task[name].configure(name, "soft", 1.0)
-            manipulability = self.solver.add_manipulability_task(config["link_name"], "both", 1.0)
-            manipulability.configure("manipulability", "soft", 1e-2)
+
+            #manipulability = self.solver.add_manipulability_task(config["link_name"], "both", 1.0)
+            #manipulability.configure("manipulability", "soft", 1e-5)
+
+            # Wrist joint regularization: soft secondary task that biases the IK
+            # solution toward 0° on each wrist DOF, minimising wrist motion when
+            # the arm has redundancy. Weight is intentionally lower than the EE
+            # task (1.0) but higher than a global joint regularization (~1e-3) so
+            # it is effective without fighting the end-effector goal.
+            #
+            # Enable per-arm by adding "wrist_joint_names" to manipulator_config:
+            #   "wrist_joint_names": ["left_wrist_roll_joint", ...]
+            # Optionally override the weight with "wrist_regularization_weight".
+            if "wrist_joint_names" in config:
+                wrist_targets = {joint: 0.0 for joint in config["wrist_joint_names"]}
+                if not wrist_targets:
+                    raise ValueError(
+                        f"manipulator_config[{name!r}]['wrist_joint_names'] must not be empty"
+                    )
+                wrist_task = self.solver.add_joints_task()
+                wrist_task.set_joints(wrist_targets)
+                weight = config.get("wrist_regularization_weight", 5e-2)
+                wrist_task.configure(f"{name}_wrist_regularization", "soft", weight)
+                self.wrist_regularization_task[name] = wrist_task
 
             # Set up motion tracker tasks if configured (position only)
             if "motion_tracker" in config:
@@ -171,7 +194,7 @@ class BaseTeleopController(abc.ABC):
                 # Create position task for motion tracker target (xyz only)
                 tracker_task_name = f"{name}_tracker"
                 self.motion_tracker_task[name] = self.solver.add_position_task(link_target, target_xyz)
-                self.motion_tracker_task[name].configure(tracker_task_name, "soft", 1.0)
+                self.motion_tracker_task[name].configure(tracker_task_name, "soft", 1e-3)
 
                 print(f"Motion tracker position task created for {name} -> {link_target}")
 
@@ -195,7 +218,7 @@ class BaseTeleopController(abc.ABC):
                     self.ref_ee_xyz[src_name], self.ref_ee_quat[src_name] = self._get_link_pose(config["link_name"])
 
                 xr_pose = self.xr_client.get_pose_by_name(config["pose_source"])
-                delta_xyz, delta_rot = self._process_xr_pose(xr_pose, src_name)
+                delta_xyz, delta_rot = self._calc_delta_xr_pose(xr_pose, src_name)
                 
                 if self.effector_control_mode[src_name] == "position":
                     # Position-only control: only apply position delta
@@ -349,7 +372,6 @@ class BaseTeleopController(abc.ABC):
                 continue
 
             gripper_config = self.manipulator_config[gripper_name]["gripper_config"]
-            gripper_config = self.manipulator_config[gripper_name]["gripper_config"]
             gripper_type = gripper_config["type"]
             if gripper_type == "parallel":
                 trigger_value = self.xr_client.get_key_value_by_name(gripper_config["gripper_trigger"])
@@ -360,7 +382,6 @@ class BaseTeleopController(abc.ABC):
                 ):
                     # Calculate the target position based on the trigger value
                     gripper_pos = calc_parallel_gripper_position(open_pos, close_pos, trigger_value)
-                    self.gripper_pos_target[gripper_name][joint_name] = gripper_pos
                     self.gripper_pos_target[gripper_name][joint_name] = gripper_pos
             else:
                 # TODO: add dexterous hand support
