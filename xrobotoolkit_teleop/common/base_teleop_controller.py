@@ -239,7 +239,9 @@ class BaseTeleopController(abc.ABC):
                 if self.ref_ee_xyz[src_name] is not None:
                     print(f"{src_name} is deactivated.")
                     self.ref_ee_xyz[src_name] = None
+                    self.ref_ee_quat[src_name] = None
                     self.ref_controller_xyz[src_name] = None
+                    self.ref_controller_quat[src_name] = None
 
         # Process motion tracker data
         self._update_motion_tracker_tasks()
