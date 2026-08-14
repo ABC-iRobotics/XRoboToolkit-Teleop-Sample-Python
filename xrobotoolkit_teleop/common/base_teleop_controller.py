@@ -179,7 +179,7 @@ class BaseTeleopController(abc.ABC):
                     )
                 wrist_task = self.solver.add_joints_task()
                 wrist_task.set_joints(wrist_targets)
-                weight = config.get("wrist_regularization_weight", 5e-2)
+                weight = config.get("wrist_regularization_weight", 2e-3)
                 wrist_task.configure(f"{name}_wrist_regularization", "soft", weight)
                 self.wrist_regularization_task[name] = wrist_task
 

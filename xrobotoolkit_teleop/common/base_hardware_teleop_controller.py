@@ -26,6 +26,7 @@ class HardwareTeleopController(BaseTeleopController, ABC):
         scale_factor: float,
         visualize_placo: bool,
         control_rate_hz: int,
+        dex_control_rate_hz: int,
         enable_log_data: bool,
         log_dir: str,
         log_freq: float,
@@ -48,6 +49,7 @@ class HardwareTeleopController(BaseTeleopController, ABC):
 
         self._start_time = 0
         self.control_rate_hz = control_rate_hz
+        self.dex_control_rate_hz = dex_control_rate_hz
         self.log_freq = log_freq
         self.visualize_placo = visualize_placo
         self.enable_camera = enable_camera
@@ -78,6 +80,11 @@ class HardwareTeleopController(BaseTeleopController, ABC):
     @abstractmethod
     def _send_command():
         """Sends motor commands to the hardware."""
+        pass
+
+    @abstractmethod
+    def _dex_send_command():
+        """Sends Dex3 motor commands to the hardware."""
         pass
 
     @abstractmethod
@@ -122,45 +129,69 @@ class HardwareTeleopController(BaseTeleopController, ABC):
         """Hook for subclasses to run logic before the main IK update."""
         pass
 
+    @staticmethod
+    def _rate_loop(stop_event: threading.Event, rate_hz: float, body):
+        """
+        Run `body()` at `rate_hz` until `stop_event` is set.
+
+        Sleeps to an absolute deadline off time.monotonic() rather than
+        sleep(period - elapsed).  A relative sleep leaves in the sleep
+        overshoot every iteration, so each loop free-runs at slightly more than
+        its nominal period and at a rate that depends on its own workload.
+        Loops sharing a rate then drift against each other by microseconds per
+        cycle and slide in and out of phase over seconds, which is how a race
+        between two of them shows up as a periodic glitch rather than as
+        constant noise.  time.monotonic() also cannot be stepped by NTP the way
+        time.time() can.
+
+        An overrun resets the deadline to now instead of trying to catch up, so
+        a single slow iteration cannot turn into a burst of back-to-back ones.
+        """
+        period = 1.0 / rate_hz
+        next_deadline = time.monotonic()
+        while not stop_event.is_set():
+            body()
+            next_deadline += period
+            delay = next_deadline - time.monotonic()
+            if delay > 0:
+                time.sleep(delay)
+            else:
+                next_deadline = time.monotonic()
+
     def _ik_thread(self, stop_event: threading.Event):
         """Dedicated thread for running the IK solver."""
-        while not stop_event.is_set():
-            start_time = time.time()
+
+        def body():
             self._update_robot_state()
             self._update_gripper_target()
             self._pre_ik_update()
             self._update_ik()
             if self.visualize_placo:
                 self._update_placo_viz()
-            elapsed_time = time.time() - start_time
-            sleep_time = (1.0 / self.control_rate_hz) - elapsed_time
-            if sleep_time > 0:
-                time.sleep(sleep_time)
+
+        self._rate_loop(stop_event, self.control_rate_hz, body)
         print("IK loop has stopped.")
 
     def _control_thread(self, stop_event: threading.Event):
         """Dedicated thread for sending commands to hardware."""
-        while not stop_event.is_set():
-            start_time = time.time()
-            self._send_command()
-            elapsed_time = time.time() - start_time
-            sleep_time = (1.0 / self.control_rate_hz) - elapsed_time
-            if sleep_time > 0:
-                time.sleep(sleep_time)
+        self._rate_loop(stop_event, self.control_rate_hz, self._send_command)
         self._shutdown_robot()
         print("Control loop has stopped.")
 
+    def _dex_control_thread(self, stop_event: threading.Event):
+        """Dedicated thread for sending commands to hardware."""
+        self._rate_loop(stop_event, self.dex_control_rate_hz, self._dex_send_command)
+        print("Dex3 control loop has stopped.")
+
     def _data_logging_thread(self, stop_event: threading.Event):
         """Dedicated thread for data logging."""
-        while not stop_event.is_set():
-            start_time = time.time()
+
+        def body():
             self._check_logging_button()
             if self._is_logging:
                 self._log_data()
-            elapsed_time = time.time() - start_time
-            sleep_time = (1.0 / self.log_freq) - elapsed_time
-            if sleep_time > 0:
-                time.sleep(sleep_time)
+
+        self._rate_loop(stop_event, self.log_freq, body)
         print("Data logging thread has stopped.")
 
     def _check_logging_button(self):
@@ -285,6 +316,7 @@ class HardwareTeleopController(BaseTeleopController, ABC):
         core_threads = {
             "_ik_thread": self._ik_thread,
             "_control_thread": self._control_thread,
+            "_dex_control_thread": self._dex_control_thread
         }
         for name, target in core_threads.items():
             thread = threading.Thread(name=name, target=target, args=(self._stop_event,))
