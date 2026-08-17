@@ -179,7 +179,7 @@ class ARXR5TeleopController(HardwareTeleopController):
     def _send_command(self):
         """Sends the solved joint targets to the hardware controllers."""
         for arm_name, controller in self.arm_controllers.items():
-            if self.active.get(arm_name, False):
+            if self.armEngaged.get(arm_name, False):
                 q_des = self.placo_robot.state.q[self.placo_arm_joint_slice[arm_name]].copy()
                 controller.set_joint_positions(q_des)
 

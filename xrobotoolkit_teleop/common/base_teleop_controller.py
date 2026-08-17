@@ -59,7 +59,7 @@ class BaseTeleopController(abc.ABC):
         self.ref_controller_quat = {name: None for name in manipulator_config.keys()}
         self.effector_task = {}
         self.effector_control_mode = {}  # Store control mode for each end effector
-        self.active = {}
+        self.armEngaged = {}
         self.gripper_pos_target = {}
         self.wrist_regularization_task: Dict[str, Any] = {}  # Per-arm soft joint tasks keeping wrists near 0°
 
@@ -210,9 +210,9 @@ class BaseTeleopController(abc.ABC):
 
         for src_name, config in self.manipulator_config.items():
             xr_grip_val = self.xr_client.get_key_value_by_name(config["control_trigger"])
-            self.active[src_name] = xr_grip_val > 0.9
+            self.armEngaged[src_name] = xr_grip_val > 0.9
 
-            if self.active[src_name]:
+            if self.armEngaged[src_name]:
                 if self.ref_ee_xyz[src_name] is None:
                     print(f"{src_name} is activated.")
                     self.ref_ee_xyz[src_name], self.ref_ee_quat[src_name] = self._get_link_pose(config["link_name"])
@@ -261,7 +261,7 @@ class BaseTeleopController(abc.ABC):
                 continue
 
             # Skip if main controller is not active
-            if not self.active.get(src_name, False):
+            if not self.armEngaged.get(src_name, False):
                 # Reset motion tracker references when controller is inactive
                 if src_name in self.ref_tracker_xyz:
                     del self.ref_tracker_xyz[src_name]
