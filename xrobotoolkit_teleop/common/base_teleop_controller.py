@@ -115,7 +115,8 @@ class BaseTeleopController(abc.ABC):
 
     def _placo_setup(self):
         """Set up the placo inverse kinematics solver."""
-        self.placo_robot = placo.RobotWrapper(self.robot_urdf_path)
+        # Positional, not flags=: the pybind/boost binding has no keyword argument.
+        self.placo_robot = placo.RobotWrapper(self.robot_urdf_path, placo.Flags.ignore_collisions)
         #print("Joint names in the Placo model:")
         #for joint_name in self.placo_robot.model.names:
         #    print(f"  {joint_name}")
