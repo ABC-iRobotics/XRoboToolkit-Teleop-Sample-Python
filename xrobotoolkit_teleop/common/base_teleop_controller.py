@@ -215,7 +215,7 @@ class BaseTeleopController(abc.ABC):
 
             if self.armEngaged[src_name]:
                 if self.ref_ee_xyz[src_name] is None:
-                    print(f"{src_name} is activated.")
+                    print(f"{src_name} is engaged.")
                     self.ref_ee_xyz[src_name], self.ref_ee_quat[src_name] = self._get_link_pose(config["link_name"])
 
                 xr_pose = self.xr_client.get_pose_by_name(config["pose_source"])
